@@ -6,7 +6,20 @@ EditorBuildSettings:
   serializedVersion: 2
   m_Scenes:
   - enabled: 1
+    path: Assets/Chase/Scenes/Title.unity
+    guid: 15568224a10eb8a4a8030131f3664b2a
+  - enabled: 1
+    path: Assets/Chase/Scenes/Lobby.unity
+    guid: 89a1b7ab5d6f1ac4da059ede7b65146a
+  - enabled: 1
+    path: Assets/Chase/Scenes/ChaseOnline.unity
+    guid: 93d6dcdce3c7f1f4db44ad478a9ce033
+  - enabled: 1
+    path: Assets/Chase/Scenes/ChasePrototype.unity
+    guid: 5645e46856f933e4d96f729ae6314aca
+  - enabled: 1
     path: Assets/Scenes/SampleScene.unity
     guid: 99c9720ab356a0642a771bea13969a05
   m_configObjects:
+    com.unity.dt.app-ui: {fileID: 11400000, guid: 1b1c20d82303e4b5781c3ef50ac1449f, type: 2}
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
