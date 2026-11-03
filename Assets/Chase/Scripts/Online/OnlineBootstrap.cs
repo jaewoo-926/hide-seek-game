@@ -14,7 +14,8 @@ namespace Chase.Online
         NetworkManager net;
         bool spawned;
 
-        void Start()
+        // Start 는 씬 로드 완료 이벤트보다 늦을 수 있어서 Awake 에서 구독한다
+        void Awake()
         {
             net = NetworkManager.Singleton;
             if (net == null || !net.IsServer) return;

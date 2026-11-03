@@ -138,26 +138,6 @@ public static class ChaseNetworkSetup
         fx.transform.localRotation = Quaternion.Euler(45, 45, 0);
         fx.SetActive(false);
 
-        // 정면 시야 스포트라이트 + 주변 빛 (소유자만 켬)
-        var spot = new GameObject("Vision Spot").AddComponent<Light>();
-        spot.transform.SetParent(go.transform, false);
-        spot.transform.localPosition = new Vector3(0, 1.6f, -0.3f);
-        spot.transform.localRotation = Quaternion.Euler(14, 0, 0);
-        spot.type = LightType.Spot;
-        spot.spotAngle = 110;
-        spot.innerSpotAngle = 80;
-        spot.range = 24;
-        spot.intensity = 140;
-        spot.color = new Color(1f, 0.95f, 0.85f);
-        spot.shadows = LightShadows.Soft;
-        var aura = new GameObject("Aura").AddComponent<Light>();
-        aura.transform.SetParent(go.transform, false);
-        aura.transform.localPosition = new Vector3(0, 3.5f, 0);
-        aura.type = LightType.Point;
-        aura.range = 7;
-        aura.intensity = 4;
-        aura.color = new Color(1f, 0.9f, 0.8f);
-
         go.AddComponent<NetworkObject>();
         var nt = go.AddComponent<NetworkTransform>();
         nt.AuthorityMode = NetworkTransform.AuthorityModes.Owner;
@@ -171,8 +151,6 @@ public static class ChaseNetworkSetup
         op.thiefParts = thiefParts;
         op.copParts = copParts;
         op.stunFx = fx;
-        op.visionLight = spot;
-        op.auraLight = aura;
 
         var prefab = PrefabUtility.SaveAsPrefabAsset(go, PrefabDir + "/OnlinePlayer.prefab");
         Object.DestroyImmediate(go);

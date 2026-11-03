@@ -7,7 +7,7 @@ using UnityEngine;
 namespace Chase.Online
 {
     public enum OnlinePhase { Heist, LastTime, ThievesWin, CopsWin }
-    public enum InteractKind { None, Safe, Hide, Prison, Exit }
+    public enum InteractKind { None, Safe, Hide, Prison, Exit, Arrest }
 
     public struct Interaction
     {
@@ -35,7 +35,6 @@ namespace Chase.Online
         public int safeCount = 10;
         public int drinkCount = 6;
         public float safeRespawnDelay = 45f;
-        public float hideSafeTime = 8f;
         public float hideMaxTime = 11f;
         public float drinkDuration = 4f;
         public float rescueBuff = 4f;
@@ -43,12 +42,17 @@ namespace Chase.Online
         public float clubRange = 2.3f;
         public float clubStun = 2.5f;
         public float catchRange = 1.7f;
-        public float batonSlow = 2f;
+        public float batonCooldown = 2f;
+        public float batonStackTime = 3f;   // 마지막으로 맞은 뒤 스택이 사라지기까지
+        public int batonStunStacks = 3;
+        public float thiefStun = 3f;
 
         [Header("시야")]
         public float viewAngle = 110f;
-        public float viewRange = 20f;
+        public float viewRange = 14f;
         public float nearRange = 3.5f;
+
+        const float BatonHalfAngle = 70f;
 
         // ---- 동기화 상태 ----
         public readonly NetworkVariable<int> Seed = new NetworkVariable<int>();
@@ -251,6 +255,10 @@ namespace Chase.Online
 
             var thieves = OnlinePlayer.All.Where(p => p.IsThief).ToList();
 
+            // 곤봉 스택 만료 (기절이 끝날 때도 함께 풀린다)
+            foreach (var t in thieves)
+                if (t.BatonStacks.Value > 0 && now >= t.batonStacksExpireAt) t.BatonStacks.Value = 0;
+
             // 금고 재충전
             for (int i = 0; i < safeCount; i++)
                 if (IsRobbed(i) && now - safeRobbedAt[i] >= safeRespawnDelay)
@@ -334,7 +342,7 @@ namespace Chase.Online
 
         public void ServerInteract(OnlinePlayer p, InteractKind kind, int index)
         {
-            if (!IsPlaying) return;
+            if (!IsPlaying || p.IsStunned) return;
             const float slack = 1.5f; // 소유자 이동 지연 허용치
 
             switch (kind)
@@ -385,6 +393,14 @@ namespace Chase.Online
                     RescueAll(p);
                     break;
 
+                case InteractKind.Arrest:
+                    if (!p.IsCop || p.State != PState.Free || !CanCapture(p)) return;
+                    var arrested = OnlinePlayer.All.FirstOrDefault(o => (int)o.OwnerClientId == index);
+                    if (arrested == null || !arrested.IsThief || arrested.State != PState.Free || !arrested.IsStunned) return;
+                    if (Flat(p.transform.position, arrested.transform.position) > catchRange + slack) return;
+                    Capture(p, arrested);
+                    break;
+
                 case InteractKind.Exit:
                     if (!p.IsThief || p.State != PState.Free || Phase != OnlinePhase.LastTime) return;
                     if (index < 0 || index >= exitPositions.Count) return;
@@ -403,8 +419,9 @@ namespace Chase.Online
 
         public void ServerClub(OnlinePlayer p)
         {
-            if (!IsPlaying || !p.IsThief || p.State != PState.Free || Now < p.ClubReadyAt.Value) return;
+            if (!IsPlaying || !p.IsThief || p.State != PState.Free || p.IsStunned || Now < p.ClubReadyAt.Value) return;
             p.ClubReadyAt.Value = Now + clubCooldown;
+            p.ServerSwing(clubRange, 80f);
             bool hit = false;
             foreach (var cop in OnlinePlayer.All.Where(o => o.IsCop && o.State == PState.Free))
             {
@@ -418,49 +435,75 @@ namespace Chase.Online
             if (!hit) NotifyRpc("몽둥이 헛스윙!", RpcTarget.Single(p.OwnerClientId, RpcTargetUse.Temp));
         }
 
-        public void ServerCatch(OnlinePlayer cop)
+        bool CanCapture(OnlinePlayer cop) => Phase == OnlinePhase.LastTime || cop.HasCuffs.Value;
+
+        OnlinePlayer NearestThief(OnlinePlayer cop, System.Func<OnlinePlayer, bool> filter, float maxAngle)
         {
-            if (!IsPlaying || !cop.IsCop || cop.State != PState.Free || cop.IsStunned) return;
             OnlinePlayer target = null;
             float best = catchRange;
             foreach (var t in OnlinePlayer.All)
             {
-                if (!t.IsThief || t.State != PState.Free) continue;
-                float d = Flat(t.transform.position, cop.transform.position);
-                if (d > best) continue;
+                if (!t.IsThief || t.State != PState.Free || !filter(t)) continue;
+                Vector3 to = t.transform.position - cop.transform.position;
+                to.y = 0f;
+                float d = to.magnitude;
+                if (d > best || Vector3.Angle(cop.transform.forward, to) > maxAngle) continue;
                 best = d;
                 target = t;
             }
-            if (target == null) return;
+            return target;
+        }
 
+        void Capture(OnlinePlayer cop, OnlinePlayer target)
+        {
+            target.BatonStacks.Value = 0;
+            target.StunUntil.Value = 0;
             if (Phase == OnlinePhase.LastTime)
             {
                 target.StateValue.Value = (int)PState.Eliminated;
                 target.ServerTeleport(new Vector3(0, -50, 0));
                 Log($"{cop.DisplayName} → {target.DisplayName} 제압! (탈락)");
+                return;
             }
-            else if (cop.HasCuffs.Value)
+            int lost = target.Money.Value;
+            int jailedCount = OnlinePlayer.All.Count(o => o.State == PState.Jailed);
+            target.Money.Value = 0;
+            target.StateValue.Value = (int)PState.Jailed;
+            target.jailedBy = cop.OwnerClientId;
+            cop.HasCuffs.Value = false;
+            target.ServerTeleport(prison.CellPoint(jailedCount % 4));
+            Log($"{cop.DisplayName} → {target.DisplayName} 체포! 감옥 이송 (게이지 -{lost})");
+        }
+
+        // 곤봉: 맞을수록 느려지고 batonStunStacks 번째에 기절한다. 기절 중인 도둑은 더 맞지 않는다.
+        public void ServerBaton(OnlinePlayer cop)
+        {
+            if (!IsPlaying || !cop.IsCop || cop.State != PState.Free || cop.IsStunned || Now < cop.ClubReadyAt.Value) return;
+            cop.ClubReadyAt.Value = Now + batonCooldown;
+            cop.ServerSwing(catchRange, BatonHalfAngle);
+
+            var target = NearestThief(cop, t => !t.IsStunned, BatonHalfAngle);
+            if (target == null) return;
+
+            target.BatonStacks.Value++;
+            target.batonStacksExpireAt = Now + batonStackTime;
+            if (target.BatonStacks.Value >= batonStunStacks)
             {
-                int lost = target.Money.Value;
-                int jailedCount = OnlinePlayer.All.Count(o => o.State == PState.Jailed);
-                target.Money.Value = 0;
-                target.StateValue.Value = (int)PState.Jailed;
-                target.jailedBy = cop.OwnerClientId;
-                cop.HasCuffs.Value = false;
-                target.ServerTeleport(prison.CellPoint(jailedCount % 4));
-                Log($"{cop.DisplayName} → {target.DisplayName} 체포! 감옥 이송 (게이지 -{lost})");
+                target.StunUntil.Value = Now + thiefStun;
+                target.batonStacksExpireAt = target.StunUntil.Value;
+                Log($"{cop.DisplayName} → {target.DisplayName} 곤봉 {batonStunStacks}회 명중! (기절)");
             }
-            else if (Now >= cop.batonReadyAt)
+            else
             {
-                cop.batonReadyAt = Now + 1.2;
-                target.SlowUntil.Value = Now + batonSlow;
-                Log($"{cop.DisplayName}: 곤봉 타격! {target.DisplayName} 둔화");
+                string text = $"{target.DisplayName} 곤봉 {target.BatonStacks.Value}스택 (이속 -{target.BatonStacks.Value * 20}%)";
+                NotifyRpc(text, RpcTarget.Single(cop.OwnerClientId, RpcTargetUse.Temp));
+                NotifyRpc(text, RpcTarget.Single(target.OwnerClientId, RpcTargetUse.Temp));
             }
         }
 
         public void ServerDrink(OnlinePlayer p)
         {
-            if (!IsPlaying || !p.IsThief || p.State != PState.Free || p.Drinks.Value <= 0) return;
+            if (!IsPlaying || !p.IsThief || p.State != PState.Free || p.IsStunned || p.Drinks.Value <= 0) return;
             p.Drinks.Value--;
             p.BuffUntil.Value = System.Math.Max(p.BuffUntil.Value, Now + drinkDuration);
         }
@@ -527,6 +570,15 @@ namespace Chase.Online
             if (me.State == PState.Hidden)
                 return new Interaction { kind = InteractKind.Hide, index = me.HideIndex.Value, prompt = "나오기", holdTime = 0f };
             if (me.State != PState.Free) return none;
+
+            // 기절한 도둑 체포는 다른 상호작용보다 우선한다
+            if (me.IsCop && CanCapture(me))
+            {
+                var stunned = NearestThief(me, t => t.IsStunned, 180f);
+                if (stunned != null)
+                    return new Interaction { kind = InteractKind.Arrest, index = (int)stunned.OwnerClientId,
+                        prompt = Phase == OnlinePhase.LastTime ? $"{stunned.DisplayName} 제압" : $"{stunned.DisplayName} 수갑 체포", holdTime = 0f };
+            }
 
             Interaction best = none;
             float bestDist = float.MaxValue;

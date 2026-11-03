@@ -102,7 +102,6 @@ MonoBehaviour:
   safeCount: 10
   drinkCount: 6
   safeRespawnDelay: 45
-  hideSafeTime: 8
   hideMaxTime: 11
   drinkDuration: 4
   rescueBuff: 4
@@ -112,5 +111,5 @@ MonoBehaviour:
   catchRange: 1.7
   batonSlow: 2
   viewAngle: 110
-  viewRange: 20
+  viewRange: 14
   nearRange: 3.5

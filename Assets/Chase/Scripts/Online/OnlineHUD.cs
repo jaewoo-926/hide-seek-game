@@ -59,7 +59,8 @@ namespace Chase.Online
                 if (sp.z < 0) continue;
                 string color = p.IsCop ? "#8FB8FF" : "#FF8A7A";
                 if (p == OnlinePlayer.Local) color = "#9EF0FF";
-                string extra = p.IsStunned ? " <color=#FFE066>(기절)</color>" : "";
+                string extra = p.IsStunned ? " <color=#FFE066>(기절)</color>"
+                    : p.IsSlowed ? $" <color=#FF6B6B>(곤봉 {p.BatonStacks.Value})</color>" : "";
                 GUI.Label(new Rect(sp.x - 120 * scale, Screen.height - sp.y - 14 * scale, 240 * scale, 28 * scale),
                     $"<color={color}>{p.DisplayName}</color>{extra}", nameplate);
             }
@@ -127,7 +128,7 @@ namespace Chase.Online
             foreach (var c in OnlinePlayer.All.Where(p => p.IsCop))
             {
                 string st = c.State == PState.Waiting ? "대기" : c.IsStunned ? "<color=#FFE066>기절</color>"
-                    : c.HasCuffs.Value ? "수갑 보유" : "<color=#FF6B6B>수갑 사용 중 (곤봉)</color>";
+                    : c.HasCuffs.Value ? "수갑 보유" : "<color=#FF6B6B>수갑 사용 중</color>";
                 sb.AppendLine($"  {c.DisplayName}  {st}");
             }
             int lines = OnlinePlayer.All.Count + 2;
@@ -148,11 +149,13 @@ namespace Chase.Online
                 sb.AppendLine($"[F] 에너지 드링크  x{me.Drinks.Value}");
                 sb.AppendLine(me.ClubCooldown > 0 ? $"[좌클릭] 몽둥이  {me.ClubCooldown:0.0}초" : "[좌클릭] 몽둥이  <color=#7CFF9A>준비</color>");
                 if (me.IsBuffed) sb.AppendLine($"<color=#7CE8FF>이속 증가 {me.BuffRemaining:0.0}초</color>");
-                if (me.IsSlowed) sb.AppendLine("<color=#FF6B6B>곤봉에 맞아 둔화!</color>");
+                if (me.IsStunned) sb.AppendLine($"<color=#FFE066>기절! {me.StunRemaining:0.0}초</color>");
+                else if (me.IsSlowed) sb.AppendLine($"<color=#FF6B6B>곤봉 {me.BatonStacks.Value}스택 (이속 -{me.BatonStacks.Value * 20}%)</color>");
             }
             else
             {
-                sb.AppendLine(me.HasCuffs.Value ? "[좌클릭] 수갑 체포" : "[좌클릭] 곤봉 (수갑 사용 중)");
+                sb.AppendLine(me.ClubCooldown > 0 ? $"[좌클릭] 곤봉  {me.ClubCooldown:0.0}초" : "[좌클릭] 곤봉  <color=#7CFF9A>준비</color>");
+                sb.AppendLine(me.HasCuffs.Value ? "[E] 기절한 도둑 수갑 체포" : "<color=#FF6B6B>수갑 사용 중 (구출되면 돌아옴)</color>");
                 sb.AppendLine("[E] 은신처 수색");
                 if (me.IsStunned) sb.AppendLine($"<color=#FFE066>기절! {me.StunRemaining:0.0}초</color>");
             }
@@ -233,7 +236,7 @@ namespace Chase.Online
         void DrawControls(OnlinePlayer me)
         {
             string help = me.IsCop
-                ? "WASD 이동 · 마우스 시선 · 우클릭 드래그 시점 회전 · 휠 줌\n좌클릭 체포/곤봉 · E 은신처 수색"
+                ? "WASD 이동 · 마우스 시선 · 우클릭 드래그 시점 회전 · 휠 줌\n좌클릭 곤봉 · E 체포/은신처 수색"
                 : "WASD 이동 · 마우스 시선 · 우클릭 드래그 시점 회전 · 휠 줌\nE 상호작용(금고/은신/구출/탈출) · 좌클릭 몽둥이 · F 에너지 드링크";
             GUI.Label(new Rect(18 * scale, Screen.height - 64 * scale, 900 * scale, 60 * scale), $"<color=#BBBBBB>{help}</color>", small);
         }

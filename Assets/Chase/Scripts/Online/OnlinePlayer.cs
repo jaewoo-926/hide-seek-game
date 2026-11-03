@@ -22,7 +22,7 @@ namespace Chase.Online
         public float thiefSpeed = 5f;
         public float copSpeed = 5.6f;
         public float buffMultiplier = 1.6f;
-        public float slowMultiplier = 0.5f;
+        public float batonSlowPerStack = 0.2f;
         public float lastTimeCopMultiplier = 1.3f;
         public float turnSharpness = 18f;
 
@@ -31,8 +31,6 @@ namespace Chase.Online
         public GameObject thiefParts;
         public GameObject copParts;
         public GameObject stunFx;
-        public Light visionLight;
-        public Light auraLight;
 
         // ---- 서버가 쓰는 동기화 상태 ----
         public readonly NetworkVariable<int> RoleValue = new NetworkVariable<int>();
@@ -44,7 +42,7 @@ namespace Chase.Online
         public readonly NetworkVariable<int> HideIndex = new NetworkVariable<int>(-1);
         public readonly NetworkVariable<bool> HasCuffs = new NetworkVariable<bool>(true);
         public readonly NetworkVariable<double> BuffUntil = new NetworkVariable<double>();
-        public readonly NetworkVariable<double> SlowUntil = new NetworkVariable<double>();
+        public readonly NetworkVariable<int> BatonStacks = new NetworkVariable<int>();
         public readonly NetworkVariable<double> StunUntil = new NetworkVariable<double>();
         public readonly NetworkVariable<double> ClubReadyAt = new NetworkVariable<double>();
 
@@ -55,7 +53,7 @@ namespace Chase.Online
         // ---- 서버 전용 ----
         [System.NonSerialized] public ulong jailedBy = ulong.MaxValue;
         [System.NonSerialized] public double hideEnteredAt;
-        [System.NonSerialized] public double batonReadyAt;
+        [System.NonSerialized] public double batonStacksExpireAt;
 
         public Role Role => (Role)RoleValue.Value;
         public PState State => (PState)StateValue.Value;
@@ -67,7 +65,7 @@ namespace Chase.Online
         double Now => NetworkManager != null ? NetworkManager.ServerTime.Time : 0;
         public bool IsStunned => Now < StunUntil.Value;
         public bool IsBuffed => Now < BuffUntil.Value;
-        public bool IsSlowed => Now < SlowUntil.Value;
+        public bool IsSlowed => BatonStacks.Value > 0;
         public float BuffRemaining => (float)System.Math.Max(0, BuffUntil.Value - Now);
         public float StunRemaining => (float)System.Math.Max(0, StunUntil.Value - Now);
         public float ClubCooldown => (float)System.Math.Max(0, ClubReadyAt.Value - Now);
@@ -80,7 +78,7 @@ namespace Chase.Online
                 float s = IsCop ? copSpeed : thiefSpeed;
                 if (IsCop && OnlineGame.I && OnlineGame.I.Phase == OnlinePhase.LastTime) s *= lastTimeCopMultiplier;
                 if (IsBuffed) s *= buffMultiplier;
-                if (IsSlowed) s *= slowMultiplier;
+                s *= 1f - BatonStacks.Value * batonSlowPerStack;
                 return s;
             }
         }
@@ -115,13 +113,12 @@ namespace Chase.Online
             ApplyLook();
 
             cc.enabled = IsOwner;
-            if (visionLight) visionLight.enabled = IsOwner;
-            if (auraLight) auraLight.enabled = IsOwner;
 
             if (IsOwner)
             {
                 Local = this;
                 cam = FindAnyObjectByType<QuarterViewCamera>();
+                if (cam && !cam.GetComponent<VisionOverlay>()) cam.gameObject.AddComponent<VisionOverlay>();
             }
         }
 
@@ -171,6 +168,17 @@ namespace Chase.Online
             verticalVelocity = 0f;
         }
 
+        // 서버 → 모든 클라이언트: 스윙 이펙트 표시 (시야 밖 상대의 스윙은 보이지 않는다)
+        public void ServerSwing(float radius, float halfAngle) => SwingRpc(radius, halfAngle);
+
+        [Rpc(SendTo.ClientsAndHost)]
+        void SwingRpc(float radius, float halfAngle)
+        {
+            if (OnlineGame.I && !OnlineGame.I.IsVisibleToLocal(this)) return;
+            var color = IsCop ? new Color(0.35f, 0.65f, 1f) : new Color(1f, 0.7f, 0.25f);
+            SwingEffect.Play(transform, radius, halfAngle, color);
+        }
+
         // ================= 소유자 입력 =================
 
         void Update()
@@ -215,6 +223,14 @@ namespace Chase.Online
                 return;
             }
 
+            // 기절 중에는 아무 행동도 할 수 없다
+            if (IsStunned)
+            {
+                CancelHold();
+                Focus = default;
+                return;
+            }
+
             if (IsThief)
             {
                 if (kb.fKey.wasPressedThisFrame) DrinkRpc();
@@ -222,7 +238,7 @@ namespace Chase.Online
             }
             else if (mouse.leftButton.wasPressedThisFrame)
             {
-                CatchRpc();
+                BatonRpc();
             }
 
             UpdateInteraction(game, kb);
@@ -322,7 +338,7 @@ namespace Chase.Online
         void ClubRpc() => OnlineGame.I.ServerClub(this);
 
         [Rpc(SendTo.Server)]
-        void CatchRpc() => OnlineGame.I.ServerCatch(this);
+        void BatonRpc() => OnlineGame.I.ServerBaton(this);
 
         [Rpc(SendTo.Server)]
         void DrinkRpc() => OnlineGame.I.ServerDrink(this);
