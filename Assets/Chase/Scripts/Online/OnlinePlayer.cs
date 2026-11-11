@@ -19,10 +19,10 @@ namespace Chase.Online
         public static OnlinePlayer Local { get; private set; }
 
         [Header("이동")]
-        public float thiefSpeed = 5f;
-        public float copSpeed = 5.6f;
-        public float buffMultiplier = 1.6f;
-        public float batonSlowPerStack = 0.2f;
+        public float thiefSpeed = 4.5f;
+        public float copSpeed = 5f;
+        public float buffMultiplier = 1.3f;
+        public float batonSlowMultiplier = 0.7f;
         public float lastTimeCopMultiplier = 1.3f;
         public float turnSharpness = 18f;
 
@@ -43,6 +43,9 @@ namespace Chase.Online
         public readonly NetworkVariable<bool> HasCuffs = new NetworkVariable<bool>(true);
         public readonly NetworkVariable<double> BuffUntil = new NetworkVariable<double>();
         public readonly NetworkVariable<int> BatonStacks = new NetworkVariable<int>();
+        public readonly NetworkVariable<double> SlowUntil = new NetworkVariable<double>();
+        public readonly NetworkVariable<double> DrinkUntil = new NetworkVariable<double>();
+        public readonly NetworkVariable<double> HideReadyAt = new NetworkVariable<double>();
         public readonly NetworkVariable<double> StunUntil = new NetworkVariable<double>();
         public readonly NetworkVariable<double> ClubReadyAt = new NetworkVariable<double>();
 
@@ -50,10 +53,15 @@ namespace Chase.Online
         public readonly NetworkVariable<int> ChosenSpawn = new NetworkVariable<int>(
             -1, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
 
+        // ---- 소유자가 쓰는 값: 감옥 앞에서 구출 키를 누르고 있는지 ----
+        public readonly NetworkVariable<bool> Rescuing = new NetworkVariable<bool>(
+            false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
+
         // ---- 서버 전용 ----
         [System.NonSerialized] public ulong jailedBy = ulong.MaxValue;
         [System.NonSerialized] public double hideEnteredAt;
         [System.NonSerialized] public double batonStacksExpireAt;
+        [System.NonSerialized] public double jailedAt;
 
         public Role Role => (Role)RoleValue.Value;
         public PState State => (PState)StateValue.Value;
@@ -65,7 +73,10 @@ namespace Chase.Online
         double Now => NetworkManager != null ? NetworkManager.ServerTime.Time : 0;
         public bool IsStunned => Now < StunUntil.Value;
         public bool IsBuffed => Now < BuffUntil.Value;
-        public bool IsSlowed => BatonStacks.Value > 0;
+        public bool IsSlowed => Now < SlowUntil.Value;
+        public bool IsDrinking => Now < DrinkUntil.Value;
+        public float HideCooldown => (float)System.Math.Max(0, HideReadyAt.Value - Now);
+        public bool CanHide => HideCooldown <= 0f && !IsDrinking; // 드링크 효과 중에는 숨을 수 없다
         public float BuffRemaining => (float)System.Math.Max(0, BuffUntil.Value - Now);
         public float StunRemaining => (float)System.Math.Max(0, StunUntil.Value - Now);
         public float ClubCooldown => (float)System.Math.Max(0, ClubReadyAt.Value - Now);
@@ -78,7 +89,7 @@ namespace Chase.Online
                 float s = IsCop ? copSpeed : thiefSpeed;
                 if (IsCop && OnlineGame.I && OnlineGame.I.Phase == OnlinePhase.LastTime) s *= lastTimeCopMultiplier;
                 if (IsBuffed) s *= buffMultiplier;
-                s *= 1f - BatonStacks.Value * batonSlowPerStack;
+                if (IsSlowed) s *= batonSlowMultiplier;
                 return s;
             }
         }
@@ -236,12 +247,15 @@ namespace Chase.Online
                 if (kb.fKey.wasPressedThisFrame) DrinkRpc();
                 if (mouse.leftButton.wasPressedThisFrame) ClubRpc();
             }
-            else if (mouse.leftButton.wasPressedThisFrame)
+            else if (mouse.leftButton.wasPressedThisFrame && !Holding)
             {
-                BatonRpc();
+                // 기절한 도둑이 앞에 있으면 좌클릭을 누르고 있어서 체포, 아니면 곤봉
+                var arrest = game.FindArrest(this);
+                if (arrest.IsValid) StartHold(arrest);
+                else BatonRpc();
             }
 
-            UpdateInteraction(game, kb);
+            UpdateInteraction(game, kb, mouse);
         }
 
         void UpdateCameraTarget(OnlineGame game)
@@ -287,12 +301,14 @@ namespace Chase.Online
                 1f - Mathf.Exp(-turnSharpness * Time.deltaTime));
         }
 
-        void UpdateInteraction(OnlineGame game, Keyboard kb)
+        void UpdateInteraction(OnlineGame game, Keyboard kb, Mouse mouse)
         {
             if (Holding)
             {
-                var current = game.FindInteraction(this);
-                if (!kb.eKey.isPressed || !current.SameTarget(holdTarget))
+                bool arrest = holdTarget.kind == InteractKind.Arrest;
+                var current = arrest ? game.FindArrest(this) : game.FindInteraction(this);
+                bool pressed = arrest ? mouse.leftButton.isPressed : kb.eKey.isPressed;
+                if (!pressed || !current.SameTarget(holdTarget))
                 {
                     CancelHold();
                     return;
@@ -307,19 +323,21 @@ namespace Chase.Online
                 return;
             }
 
-            Focus = game.FindInteraction(this);
-            if (!Focus.IsValid || !kb.eKey.wasPressedThisFrame) return;
-            if (Focus.holdTime <= 0f)
-            {
-                InteractRpc((int)Focus.kind, Focus.index);
-            }
-            else
-            {
-                Holding = true;
-                holdTarget = Focus;
-                holdTime = 0f;
-                HoldRatio = 0f;
-            }
+            var arrestable = game.FindArrest(this);
+            Focus = arrestable.IsValid ? arrestable : game.FindInteraction(this);
+            // 구출은 서버가 게이지를 관리하므로 누르고 있는지만 알린다
+            SetRescuing(Focus.kind == InteractKind.Prison && kb.eKey.isPressed);
+            if (!Focus.IsValid || Focus.kind == InteractKind.Arrest || Focus.kind == InteractKind.Prison || !kb.eKey.wasPressedThisFrame) return;
+            if (Focus.holdTime <= 0f) InteractRpc((int)Focus.kind, Focus.index);
+            else StartHold(Focus);
+        }
+
+        void StartHold(Interaction target)
+        {
+            Holding = true;
+            holdTarget = target;
+            holdTime = 0f;
+            HoldRatio = 0f;
         }
 
         void CancelHold()
@@ -327,6 +345,12 @@ namespace Chase.Online
             Holding = false;
             holdTime = 0f;
             HoldRatio = 0f;
+            SetRescuing(false);
+        }
+
+        void SetRescuing(bool value)
+        {
+            if (Rescuing.Value != value) Rescuing.Value = value;
         }
 
         // ================= 서버 요청 =================

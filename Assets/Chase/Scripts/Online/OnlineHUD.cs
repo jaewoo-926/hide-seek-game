@@ -45,7 +45,8 @@ namespace Chase.Online
             DrawPrompt(game, me);
             DrawLog(game);
             DrawControls(me);
-            if (!game.IsPlaying) DrawEnd(game);
+            if (game.Phase == OnlinePhase.Countdown) DrawCountdown(game);
+            if (game.IsOver) DrawEnd(game);
         }
 
         void DrawNameplates(OnlineGame game)
@@ -60,7 +61,7 @@ namespace Chase.Online
                 string color = p.IsCop ? "#8FB8FF" : "#FF8A7A";
                 if (p == OnlinePlayer.Local) color = "#9EF0FF";
                 string extra = p.IsStunned ? " <color=#FFE066>(기절)</color>"
-                    : p.IsSlowed ? $" <color=#FF6B6B>(곤봉 {p.BatonStacks.Value})</color>" : "";
+                    : p.BatonStacks.Value > 0 ? $" <color=#FF6B6B>(곤봉 {p.BatonStacks.Value})</color>" : "";
                 GUI.Label(new Rect(sp.x - 120 * scale, Screen.height - sp.y - 14 * scale, 240 * scale, 28 * scale),
                     $"<color={color}>{p.DisplayName}</color>{extra}", nameplate);
             }
@@ -72,9 +73,14 @@ namespace Chase.Online
             var cam = Camera.main;
             Vector3 sp = cam.WorldToScreenPoint(game.PingPosition.Value + Vector3.up * 1.5f);
             if (sp.z < 0) return;
-            float pulse = 1f + Mathf.PingPong(Time.time * 2f, 0.4f);
-            GUI.Label(new Rect(sp.x - 100 * scale, Screen.height - sp.y - 20 * scale * pulse, 200 * scale, 40 * scale),
-                "<color=#FFE066><b>! 소리 !</b></color>", center);
+            // 오브젝트 위 말풍선 (이미지가 생기면 교체)
+            float pulse = 1f + Mathf.PingPong(Time.time * 2f, 0.15f);
+            float w = 96 * scale * pulse, h = 56 * scale * pulse;
+            var bubble = new Rect(sp.x - w / 2f, Screen.height - sp.y - h, w, h);
+            Fill(bubble, new Color(1f, 0.88f, 0.4f, 0.95f));
+            Fill(new Rect(sp.x - 6 * scale, bubble.yMax, 12 * scale, 10 * scale), new Color(1f, 0.88f, 0.4f, 0.95f));
+            GUI.Label(bubble, "<color=#1A1A1A><b>!!</b></color>", center);
+
         }
 
         void DrawGauge(OnlineGame game, OnlinePlayer me)
@@ -92,7 +98,8 @@ namespace Chase.Online
             else
             {
                 Fill(new Rect(rect.x, rect.y, rect.width * game.GaugeRatio, rect.height), GaugeFill);
-                text = $"<b>도둑 팀 게이지</b>  {game.Gauge} / {game.targetMoney}";
+                int left = Mathf.CeilToInt(game.Phase == OnlinePhase.Countdown ? game.matchTimeLimit : game.MatchRemaining);
+                text = $"<b>도둑 팀 게이지</b>  {game.Gauge} / {game.targetMoney}    <color=#DDDDDD>남은 시간 {left / 60}:{left % 60:00}</color>";
             }
             GUI.Label(rect, text, center);
 
@@ -149,13 +156,16 @@ namespace Chase.Online
                 sb.AppendLine($"[F] 에너지 드링크  x{me.Drinks.Value}");
                 sb.AppendLine(me.ClubCooldown > 0 ? $"[좌클릭] 몽둥이  {me.ClubCooldown:0.0}초" : "[좌클릭] 몽둥이  <color=#7CFF9A>준비</color>");
                 if (me.IsBuffed) sb.AppendLine($"<color=#7CE8FF>이속 증가 {me.BuffRemaining:0.0}초</color>");
+                if (me.IsDrinking) sb.AppendLine("<color=#BBBBBB>드링크 효과 중 - 숨을 수 없음</color>");
+                else if (me.HideCooldown > 0f) sb.AppendLine($"<color=#BBBBBB>다시 숨기까지 {me.HideCooldown:0}초</color>");
                 if (me.IsStunned) sb.AppendLine($"<color=#FFE066>기절! {me.StunRemaining:0.0}초</color>");
-                else if (me.IsSlowed) sb.AppendLine($"<color=#FF6B6B>곤봉 {me.BatonStacks.Value}스택 (이속 -{me.BatonStacks.Value * 20}%)</color>");
+                else if (me.BatonStacks.Value > 0)
+                    sb.AppendLine($"<color=#FF6B6B>곤봉 {me.BatonStacks.Value}/{game.batonStunStacks}대" + (me.IsSlowed ? "  이속 감소" : "") + "</color>");
             }
             else
             {
                 sb.AppendLine(me.ClubCooldown > 0 ? $"[좌클릭] 곤봉  {me.ClubCooldown:0.0}초" : "[좌클릭] 곤봉  <color=#7CFF9A>준비</color>");
-                sb.AppendLine(me.HasCuffs.Value ? "[E] 기절한 도둑 수갑 체포" : "<color=#FF6B6B>수갑 사용 중 (구출되면 돌아옴)</color>");
+                sb.AppendLine(me.HasCuffs.Value ? "[좌클릭 유지] 기절한 도둑 수갑 체포" : "<color=#FF6B6B>수갑 사용 중 (구출되면 돌아옴)</color>");
                 sb.AppendLine("[E] 은신처 수색");
                 if (me.IsStunned) sb.AppendLine($"<color=#FFE066>기절! {me.StunRemaining:0.0}초</color>");
             }
@@ -192,14 +202,22 @@ namespace Chase.Online
                     text = "숨는 중   <b>[E]</b> 나오기   <color=#BBBBBB>(오래 있으면 들킨다)</color>";
                     break;
                 default:
-                    if (me.Holding)
+                    if (me.Focus.kind == InteractKind.Prison)
+                    {
+                        text = "<b>[E 유지]</b> 동료 구출  <color=#BBBBBB>(놓으면 천천히 줄어든다)</color>";
+                        ratio = game.RescueProgress.Value;
+                    }
+                    else if (me.Holding)
                     {
                         text = me.Focus.prompt;
                         ratio = me.HoldRatio;
                     }
+
                     else if (me.Focus.IsValid)
                     {
-                        text = $"<b>[E]</b> {me.Focus.prompt}" + (me.Focus.holdTime > 0f ? "  (꾹 누르기)" : "");
+                        text = me.Focus.kind == InteractKind.Arrest
+                            ? $"<b>[좌클릭 유지]</b> {me.Focus.prompt}"
+                            : $"<b>[E]</b> {me.Focus.prompt}" + (me.Focus.holdTime > 0f ? "  (꾹 누르기)" : "");
                     }
                     break;
             }
@@ -236,9 +254,16 @@ namespace Chase.Online
         void DrawControls(OnlinePlayer me)
         {
             string help = me.IsCop
-                ? "WASD 이동 · 마우스 시선 · 우클릭 드래그 시점 회전 · 휠 줌\n좌클릭 곤봉 · E 체포/은신처 수색"
+                ? "WASD 이동 · 마우스 시선 · 우클릭 드래그 시점 회전 · 휠 줌\n좌클릭 곤봉 · 기절한 도둑 앞에서 좌클릭 유지로 체포 · E 은신처 수색"
                 : "WASD 이동 · 마우스 시선 · 우클릭 드래그 시점 회전 · 휠 줌\nE 상호작용(금고/은신/구출/탈출) · 좌클릭 몽둥이 · F 에너지 드링크";
             GUI.Label(new Rect(18 * scale, Screen.height - 64 * scale, 900 * scale, 60 * scale), $"<color=#BBBBBB>{help}</color>", small);
+        }
+
+        void DrawCountdown(OnlineGame game)
+        {
+            int n = Mathf.CeilToInt(game.CountdownRemaining);
+            GUI.Label(new Rect(0, Screen.height * 0.32f, Screen.width, 90 * scale), n > 0 ? n.ToString() : "시작!", big);
+            GUI.Label(new Rect(0, Screen.height * 0.32f + 100 * scale, Screen.width, 40 * scale), "곧 게임이 시작됩니다", center);
         }
 
         void DrawEnd(OnlineGame game)
