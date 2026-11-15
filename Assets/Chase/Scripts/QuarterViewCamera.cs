@@ -25,6 +25,13 @@ namespace Chase
             if (target) focus = target.position;
         }
 
+        // 순간이동 직후 따라가는 연출 없이 바로 대상 위치로 옮긴다
+        public void SnapToTarget()
+        {
+            var follow = ResolveTarget();
+            if (follow) focus = follow.position;
+        }
+
         void LateUpdate()
         {
             var mouse = Mouse.current;

@@ -35,10 +35,9 @@ public static class ChaseNetworkSetup
         Directory.CreateDirectory(PrefabDir);
         Directory.CreateDirectory(SceneDir);
 
-        // 인게임 씬을 먼저 만들어 머티리얼을 준비한다
-        var onlinePlayerPrefab = BuildOnlinePlayerPrefabSafe();
-        var onlineGamePrefab = BuildOnlineGamePrefabSafe();
-        BuildOnlineScene(onlineGamePrefab, onlinePlayerPrefab);
+        // 인게임 씬(ChaseOnline)과 프리팹은 손으로 다듬고 있으니 다시 만들지 않고 그대로 가져온다
+        var onlinePlayerPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(PrefabDir + "/OnlinePlayer.prefab");
+        var onlineGamePrefab = AssetDatabase.LoadAssetAtPath<GameObject>(PrefabDir + "/OnlineGame.prefab");
 
         var playerPrefab = BuildLobbyPlayerPrefab();
         var networkManagerPrefab = BuildNetworkManagerPrefab();
@@ -117,100 +116,6 @@ public static class ChaseNetworkSetup
         return (thief, cop);
     }
 
-    static GameObject BuildOnlinePlayerPrefab()
-    {
-        var go = new GameObject("OnlinePlayer");
-        var cc = go.AddComponent<CharacterController>();
-        cc.height = 1.8f;
-        cc.radius = 0.4f;
-        cc.center = new Vector3(0, 0.9f, 0);
-
-        var body = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-        Object.DestroyImmediate(body.GetComponent<Collider>());
-        body.name = "Body";
-        body.transform.SetParent(go.transform, false);
-        body.transform.localPosition = new Vector3(0, 0.9f, 0);
-        body.transform.localScale = new Vector3(0.8f, 0.9f, 0.8f);
-        body.GetComponent<Renderer>().sharedMaterial = Mat("Player");
-
-        var (thiefParts, copParts) = BuildRoleParts(go.transform);
-        var fx = Cube(go.transform, "StunFx", new Vector3(0, 2.4f, 0), new Vector3(0.35f, 0.35f, 0.35f), Mat("Clue"), false);
-        fx.transform.localRotation = Quaternion.Euler(45, 45, 0);
-        fx.SetActive(false);
-
-        go.AddComponent<NetworkObject>();
-        var nt = go.AddComponent<NetworkTransform>();
-        nt.AuthorityMode = NetworkTransform.AuthorityModes.Owner;
-        nt.SyncRotAngleX = false;
-        nt.SyncRotAngleZ = false;
-        nt.SyncScaleX = nt.SyncScaleY = nt.SyncScaleZ = false;
-        nt.Interpolate = true;
-
-        var op = go.AddComponent<Chase.Online.OnlinePlayer>();
-        op.bodyRenderer = body.GetComponent<Renderer>();
-        op.thiefParts = thiefParts;
-        op.copParts = copParts;
-        op.stunFx = fx;
-
-        var prefab = PrefabUtility.SaveAsPrefabAsset(go, PrefabDir + "/OnlinePlayer.prefab");
-        Object.DestroyImmediate(go);
-        return prefab;
-    }
-
-    static GameObject BuildOnlineGamePrefab()
-    {
-        var go = new GameObject("OnlineGame");
-        go.AddComponent<NetworkObject>();
-        ChaseSceneBuilder.AddSpawner(go);
-        go.AddComponent<Chase.Online.OnlineGame>();
-        var prefab = PrefabUtility.SaveAsPrefabAsset(go, PrefabDir + "/OnlineGame.prefab");
-        Object.DestroyImmediate(go);
-        return prefab;
-    }
-
-    static void BuildOnlineScene(GameObject gamePrefab, GameObject playerPrefab)
-    {
-        var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-        var info = ChaseSceneBuilder.BuildLevel();
-
-        // 경찰 대기 장소 (맵 밖 경찰서 앞마당)
-        var station = new GameObject("Police Station").transform;
-        var copWait = new Vector3(0, 0, -52f);
-        Cube(station, "Yard", copWait + new Vector3(0, -0.5f, 0), new Vector3(10, 1, 6), Mat("Sidewalk"));
-        Cube(station, "Building", copWait + new Vector3(0, 1.5f, -4f), new Vector3(10, 3, 2), Mat("Cop"));
-
-        var center = new GameObject("Map Center").transform;
-        center.position = Vector3.zero;
-
-        var data = new GameObject("Map Data").AddComponent<Chase.Online.OnlineMapData>();
-        data.thiefSpawn = info.thiefSpawn;
-        data.copWaitPoint = copWait;
-        data.mapCenter = center;
-        data.copSpawnPoints = info.copSpawnPoints;
-        data.prisonSpots = info.prisonSpots;
-        data.itemSpots = info.itemSpots;
-
-        var camGo = new GameObject("Main Camera") { tag = "MainCamera" };
-        var cam = camGo.AddComponent<Camera>();
-        cam.fieldOfView = 35;
-        cam.farClipPlane = 250;
-        cam.clearFlags = CameraClearFlags.SolidColor;
-        cam.backgroundColor = new Color(0.05f, 0.06f, 0.09f);
-        camGo.AddComponent<AudioListener>();
-        var qv = camGo.AddComponent<QuarterViewCamera>();
-        qv.maxDistance = 90f;
-        camGo.transform.rotation = Quaternion.Euler(qv.pitch, qv.yaw, 0);
-        camGo.transform.position = -(camGo.transform.rotation * Vector3.forward) * qv.distance;
-
-        var boot = new GameObject("Online Bootstrap");
-        var b = boot.AddComponent<Chase.Online.OnlineBootstrap>();
-        b.gamePrefab = gamePrefab;
-        b.playerPrefab = playerPrefab;
-        boot.AddComponent<Chase.Online.OnlineHUD>();
-
-        EditorSceneManager.SaveScene(scene, OnlinePath);
-    }
-
     static GameObject BuildNetworkManagerPrefab()
     {
         var go = new GameObject("NetworkManager");
@@ -227,16 +132,6 @@ public static class ChaseNetworkSetup
     }
 
     // ---------------- 씬 ----------------
-
-    // 머티리얼은 BuildLevel 에서 갱신되므로, 프리팹 생성 전에 한 번 준비해 둔다
-    static GameObject BuildOnlinePlayerPrefabSafe()
-    {
-        EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-        ChaseSceneBuilder.BuildLevel();
-        return BuildOnlinePlayerPrefab();
-    }
-
-    static GameObject BuildOnlineGamePrefabSafe() => BuildOnlineGamePrefab();
 
     static void BuildTitleScene(GameObject networkManagerPrefab, GameObject playerPrefab, GameObject[] extraPrefabs)
     {

@@ -96,18 +96,18 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Chase.Online.OnlineGame
   ShowTopMostFoldoutHeaderGroup: 1
-  targetMoney: 1000
-  copEntryDelay: 30
-  lastTimeDuration: 90
+  gaugeMaxAmount: 1000
+  thiefHeadStartSec: 30
+  lastTimeDurationSec: 90
   safeCount: 12
-  drinkCount: 6
+  energyDrinkCount: 6
   safeRespawnDelay: 45
-  hideMaxTime: 20
-  drinkDuration: 8
-  rescueBuff: 4
-  clubCooldown: 10
-  clubRange: 1.5
-  clubStun: 1.5
-  viewAngle: 90
+  hideMaxDurationSec: 20
+  energyDrinkDurationSec: 8
+  jailEscapeBuffDurationSec: 4
+  batCooldownSec: 10
+  batRange: 1.5
+  batStunDurationSec: 1.5
+  copViewAngleDeg: 90
   viewRange: 14
   nearRange: 3.5

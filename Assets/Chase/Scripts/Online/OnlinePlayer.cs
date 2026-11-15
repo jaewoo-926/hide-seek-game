@@ -19,11 +19,12 @@ namespace Chase.Online
         public static OnlinePlayer Local { get; private set; }
 
         [Header("이동")]
-        public float thiefSpeed = 4.5f;
-        public float copSpeed = 5f;
-        public float buffMultiplier = 1.3f;
+        public float thiefMoveSpeed = 4.5f;
+        public float copMoveSpeed = 5f;
+        public float energyDrinkSpeedMultiplier = 1.3f;
+        public float jailEscapeSpeedMultiplier = 1.3f;
         public float batonSlowMultiplier = 0.7f;
-        public float lastTimeCopMultiplier = 1.3f;
+        public float copLastTimeSpeedMultiplier = 1.3f;
         public float turnSharpness = 18f;
 
         [Header("비주얼")]
@@ -35,13 +36,12 @@ namespace Chase.Online
         // ---- 서버가 쓰는 동기화 상태 ----
         public readonly NetworkVariable<int> RoleValue = new NetworkVariable<int>();
         public readonly NetworkVariable<FixedString64Bytes> Nickname = new NetworkVariable<FixedString64Bytes>();
-        public readonly NetworkVariable<int> ColorIndex = new NetworkVariable<int>();
         public readonly NetworkVariable<int> StateValue = new NetworkVariable<int>();
         public readonly NetworkVariable<int> Money = new NetworkVariable<int>();
         public readonly NetworkVariable<int> Drinks = new NetworkVariable<int>();
         public readonly NetworkVariable<int> HideIndex = new NetworkVariable<int>(-1);
         public readonly NetworkVariable<bool> HasCuffs = new NetworkVariable<bool>(true);
-        public readonly NetworkVariable<double> BuffUntil = new NetworkVariable<double>();
+        public readonly NetworkVariable<double> EscapeBuffUntil = new NetworkVariable<double>();
         public readonly NetworkVariable<int> BatonStacks = new NetworkVariable<int>();
         public readonly NetworkVariable<double> SlowUntil = new NetworkVariable<double>();
         public readonly NetworkVariable<double> DrinkUntil = new NetworkVariable<double>();
@@ -72,12 +72,12 @@ namespace Chase.Online
 
         double Now => NetworkManager != null ? NetworkManager.ServerTime.Time : 0;
         public bool IsStunned => Now < StunUntil.Value;
-        public bool IsBuffed => Now < BuffUntil.Value;
+        public bool IsBuffed => IsDrinking || Now < EscapeBuffUntil.Value;
         public bool IsSlowed => Now < SlowUntil.Value;
         public bool IsDrinking => Now < DrinkUntil.Value;
         public float HideCooldown => (float)System.Math.Max(0, HideReadyAt.Value - Now);
         public bool CanHide => HideCooldown <= 0f && !IsDrinking; // 드링크 효과 중에는 숨을 수 없다
-        public float BuffRemaining => (float)System.Math.Max(0, BuffUntil.Value - Now);
+        public float BuffRemaining => (float)System.Math.Max(0, System.Math.Max(DrinkUntil.Value, EscapeBuffUntil.Value) - Now);
         public float StunRemaining => (float)System.Math.Max(0, StunUntil.Value - Now);
         public float ClubCooldown => (float)System.Math.Max(0, ClubReadyAt.Value - Now);
 
@@ -86,9 +86,13 @@ namespace Chase.Online
             get
             {
                 if (IsStunned) return 0f;
-                float s = IsCop ? copSpeed : thiefSpeed;
-                if (IsCop && OnlineGame.I && OnlineGame.I.Phase == OnlinePhase.LastTime) s *= lastTimeCopMultiplier;
-                if (IsBuffed) s *= buffMultiplier;
+                float s = IsCop ? copMoveSpeed : thiefMoveSpeed;
+                if (IsCop && OnlineGame.I && OnlineGame.I.Phase == OnlinePhase.LastTime) s *= copLastTimeSpeedMultiplier;
+                // 드링크와 탈옥 버프는 겹치지 않고 더 강한 쪽만 적용
+                float buff = 1f;
+                if (IsDrinking) buff = energyDrinkSpeedMultiplier;
+                if (Now < EscapeBuffUntil.Value) buff = Mathf.Max(buff, jailEscapeSpeedMultiplier);
+                s *= buff;
                 if (IsSlowed) s *= batonSlowMultiplier;
                 return s;
             }
@@ -113,14 +117,18 @@ namespace Chase.Online
             cc = GetComponent<CharacterController>();
             netTransform = GetComponent<NetworkTransform>();
             renderers = GetComponentsInChildren<Renderer>(true);
-            if (bodyRenderer) bodyMaterial = bodyRenderer.material;
+            // 캡슐 몸통은 경찰만 쓴다 (도둑은 라쿤 모델)
+            if (bodyRenderer)
+            {
+                bodyMaterial = bodyRenderer.material;
+                bodyMaterial.SetColor("_BaseColor", new Color(0.18f, 0.36f, 0.83f));
+            }
         }
 
         public override void OnNetworkSpawn()
         {
             All.Add(this);
             RoleValue.OnValueChanged += (_, __) => ApplyLook();
-            ColorIndex.OnValueChanged += (_, __) => ApplyLook();
             ApplyLook();
 
             cc.enabled = IsOwner;
@@ -151,12 +159,6 @@ namespace Chase.Online
         {
             if (thiefParts) thiefParts.SetActive(IsThief);
             if (copParts) copParts.SetActive(IsCop);
-            if (bodyMaterial)
-            {
-                var c = IsCop ? new Color(0.18f, 0.36f, 0.83f)
-                    : Chase.Net.LobbyPlayer.Palette[Mathf.Max(0, ColorIndex.Value) % Chase.Net.LobbyPlayer.Palette.Length];
-                bodyMaterial.SetColor("_BaseColor", c);
-            }
         }
 
         public void SetRendered(bool visible)
@@ -177,6 +179,7 @@ namespace Chase.Online
             else transform.position = position;
             cc.enabled = true;
             verticalVelocity = 0f;
+            if (cam) cam.SnapToTarget(); // 층 이동처럼 멀리 갈 때 카메라가 날아가지 않게
         }
 
         // 서버 → 모든 클라이언트: 스윙 이펙트 표시 (시야 밖 상대의 스윙은 보이지 않는다)

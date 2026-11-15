@@ -51,9 +51,7 @@ namespace Chase.Online
                 var p = go.GetComponent<OnlinePlayer>();
                 p.RoleValue.Value = (int)entry.role;
                 p.Nickname.Value = new Unity.Collections.FixedString64Bytes(entry.nickname);
-                p.ColorIndex.Value = entry.color;
                 p.StateValue.Value = (int)(cop ? PState.Waiting : PState.Free);
-                p.HasCuffs.Value = true;
                 // 소유자 권한 NetworkTransform 이라 소유자 쪽에서도 시작 위치를 확정해 준다
                 p.ServerTeleport(pos);
             }

@@ -82,7 +82,7 @@ namespace Chase.Online
             material.SetFloat(BiasId, WallBias);
             material.SetFloat(BodyId, BodyRadius);
             material.SetFloat(YawId, Mathf.Repeat(yaw, 360f) / 360f);
-            material.SetFloat(HalfId, game.viewAngle * 0.5f / 360f);
+            material.SetFloat(HalfId, game.ViewAngleFor(me) * 0.5f / 360f);
         }
 
         // OnlineGame.IsVisibleToLocal 에서 시야 제한을 받는 경우와 맞춘다
@@ -94,7 +94,7 @@ namespace Chase.Online
 
         void CastDistances(Vector3 eye, float yaw, OnlineGame game)
         {
-            float halfAngle = game.viewAngle * 0.5f;
+            float halfAngle = game.ViewAngleFor(OnlinePlayer.Local) * 0.5f;
             for (int i = 0; i < RayCount; i++)
             {
                 float angle = i * 360f / RayCount;

@@ -7,7 +7,7 @@ using UnityEngine;
 namespace Chase.Online
 {
     public enum OnlinePhase { Heist, LastTime, ThievesWin, CopsWin, Countdown }
-    public enum InteractKind { None, Safe, Hide, Prison, Exit, Arrest }
+    public enum InteractKind { None, Safe, Hide, Prison, Exit, Arrest, Portal }
 
     public struct Interaction
     {
@@ -29,38 +29,42 @@ namespace Chase.Online
         public static OnlineGame I { get; private set; }
 
         [Header("규칙")]
-        public float startCountdown = 5f;
-        public float matchTimeLimit = 600f;   // 시작부터 라스트 타임 전까지. 못 채우면 경찰 승리
-        public int targetMoney = 1000;
-        public float copEntryDelay = 30f;
-        public float lastTimeDuration = 90f;
+        public float startCountdownSec = 5f;
+        public float matchTimeLimitSec = 600f;   // 시작부터 라스트 타임 전까지. 못 채우면 경찰 승리
+        public int gaugeMaxAmount = 1000;
+        public float thiefHeadStartSec = 30f;
+        public float lastTimeDurationSec = 90f;
         public int safeCount = 12;
-        public int drinkCount = 6;
+        public int energyDrinkCount = 6;
         public float safeRespawnDelay = 45f;
-        public float hideMaxTime = 20f;
-        public float hideCooldown = 10f;      // 은신처에서 나온 뒤 다시 숨기까지
-        public float drinkDuration = 8f;
-        public float rescueHoldTime = 5f;
+        public float hideMaxDurationSec = 20f;
+        public float hideCooldownSec = 10f;      // 은신처에서 나온 뒤 다시 숨기까지
+        public float energyDrinkDurationSec = 8f;
+        public float rescueHoldDurationSec = 5f;
         public float rescueDecayMultiplier = 0.5f; // 키를 놓으면 채우는 속도의 절반으로 줄어든다
-        public float rescueBuff = 4f;
-        public float clubCooldown = 10f;
-        public float clubRange = 1.5f;
-        public float clubStun = 1.5f;
+        public float jailEscapeBuffDurationSec = 4f;
+        public float batCooldownSec = 10f;
+        public float batRange = 1.5f;
+        public float batStunDurationSec = 1.5f;
         public float batonRange = 1.5f;
-        public float batonCooldown = 1f;
-        public float batonSlowDuration = 3f;   // 맞을 때마다 갱신
-        public float batonStackTime = 30f;     // 마지막으로 맞은 뒤 스택이 사라지기까지
-        public int batonStunStacks = 3;
-        public float thiefStun = 4f;
+        public float batonAttackIntervalSec = 1f;
+        public float batonSlowDurationSec = 3f;   // 맞을 때마다 갱신
+        public float batonStackResetSec = 30f;     // 마지막으로 맞은 뒤 스택이 사라지기까지
+        public int batonStacksToStun = 3;
+        public float batonStunDurationSec = 4f;
         public float cuffRange = 1.2f;         // 정면 시야각 안에서만
-        public float cuffArrestTime = 1.5f;    // 좌클릭 유지, 그동안 이동 불가
+        public float cuffArrestDurationSec = 1.5f;    // 좌클릭 유지, 그동안 이동 불가
 
         [Header("시야")]
-        public float viewAngle = 90f;
+        public float copViewAngleDeg = 90f;
+        public float thiefViewAngleDeg = 90f;   // 기획서에 없어서 경찰과 같게 둠
         public float viewRange = 14f;
         public float nearRange = 3.5f;
 
+        public float ViewAngleFor(OnlinePlayer p) => p.IsCop ? copViewAngleDeg : thiefViewAngleDeg;
+
         const float BatonHalfAngle = 70f;
+        const float PortalRange = 1.8f;
 
         // ---- 동기화 상태 ----
         public readonly NetworkVariable<int> Seed = new NetworkVariable<int>();
@@ -89,7 +93,7 @@ namespace Chase.Online
         public int Gauge => OnlinePlayer.All
             .Where(p => p.IsThief && (Phase == OnlinePhase.LastTime || (p.State != PState.Jailed && p.State != PState.Eliminated)))
             .Sum(p => p.Money.Value);
-        public float GaugeRatio => Mathf.Clamp01((float)Gauge / targetMoney);
+        public float GaugeRatio => Mathf.Clamp01((float)Gauge / gaugeMaxAmount);
         public bool PasswordComplete => KnownDigits.Value == 0b1111;
         public string Password { get; private set; } = "????";
         public string PasswordDisplay =>
@@ -106,13 +110,13 @@ namespace Chase.Online
         bool worldBuilt;
         readonly List<Vector3> safePositions = new List<Vector3>();
         readonly List<int> safeMoney = new List<int>();
-        readonly List<Safe> safeObjects = new List<Safe>();
         readonly List<Renderer> safeDoors = new List<Renderer>();
         readonly List<GameObject> pickupObjects = new List<GameObject>();
         readonly List<Vector3> pickupPositions = new List<Vector3>();
         readonly List<Vector3> exitPositions = new List<Vector3>();
         readonly List<ExitPoint> exitObjects = new List<ExitPoint>();
         HideSpot[] hideSpots = new HideSpot[0];
+        FloorPortal[] portals = new FloorPortal[0];
         Prison prison;
         readonly double[] safeRobbedAt = new double[32];
         Color baseAmbient;
@@ -129,14 +133,17 @@ namespace Chase.Online
             baseAmbient = RenderSettings.ambientLight;
             hideSpots = FindObjectsByType<HideSpot>()
                 .OrderBy(h => h.transform.position.x).ThenBy(h => h.transform.position.z).ToArray();
+            // 모든 클라이언트가 같은 순서로 번호를 매겨야 index 로 주고받을 수 있다
+            portals = FindObjectsByType<FloorPortal>()
+                .OrderBy(p => p.transform.position.x).ThenBy(p => p.transform.position.z).ToArray();
 
             if (IsServer)
             {
                 Seed.Value = Random.Range(1, int.MaxValue);
                 PhaseValue.Value = (int)OnlinePhase.Countdown;
-                StartsAt.Value = Now + startCountdown;
-                CopEntryAt.Value = StartsAt.Value + copEntryDelay;
-                MatchEndsAt.Value = StartsAt.Value + matchTimeLimit;
+                StartsAt.Value = Now + startCountdownSec;
+                CopEntryAt.Value = StartsAt.Value + thiefHeadStartSec;
+                MatchEndsAt.Value = StartsAt.Value + matchTimeLimitSec;
             }
 
             Seed.OnValueChanged += (_, __) => BuildWorld();
@@ -199,9 +206,9 @@ namespace Chase.Online
                 Vector3 p = Take(7f, s => Flat(s, map.thiefSpawn) > 6f);
                 int money = rng.Next(10, 19) * 10;
                 var safe = spawner.SpawnSafe(p, money);
+                safe.enabled = false; // 싱글플레이 로직은 끄고 표시용으로만 사용
                 safePositions.Add(p);
                 safeMoney.Add(money);
-                safeObjects.Add(safe);
                 safeDoors.Add(safe.transform.GetChild(1).GetComponent<Renderer>());
             }
             for (int i = 0; i < 4; i++)
@@ -210,16 +217,15 @@ namespace Chase.Online
                 spawner.SpawnClue(p, i);
                 pickupPositions.Add(p);
             }
-            for (int i = 0; i < drinkCount; i++)
+            for (int i = 0; i < energyDrinkCount; i++)
             {
                 Vector3 p = Take(5f);
                 spawner.SpawnDrink(p);
                 pickupPositions.Add(p);
             }
             // 스포너가 만든 픽업 오브젝트를 생성 순서대로 수집 (Pickup.All 은 OnEnable 순서)
+            // (픽업은 GameManager 가 없으면 회전만 한다)
             pickupObjects.AddRange(Pickup.All.Select(p => p.gameObject));
-            // 금고의 싱글플레이 로직은 끄고 표시용으로만 사용 (픽업은 GameManager 가 없으면 회전만 한다)
-            foreach (var s in safeObjects) s.enabled = false;
 
             RefreshSafes();
             RefreshPickups();
@@ -317,7 +323,7 @@ namespace Chase.Online
             // 오래 숨어 있으면 들킨다
             foreach (var t in thieves)
             {
-                if (t.State == PState.Hidden && now - t.hideEnteredAt > hideMaxTime)
+                if (t.State == PState.Hidden && now - t.hideEnteredAt > hideMaxDurationSec)
                 {
                     int idx = t.HideIndex.Value;
                     LeaveHide(t);
@@ -328,9 +334,9 @@ namespace Chase.Online
 
             UpdateRescue(thieves);
 
-            if (Phase == OnlinePhase.Heist && Gauge >= targetMoney)
+            if (Phase == OnlinePhase.Heist && Gauge >= gaugeMaxAmount)
             {
-                LastTimeEndsAt.Value = now + lastTimeDuration;
+                LastTimeEndsAt.Value = now + lastTimeDurationSec;
                 PhaseValue.Value = (int)OnlinePhase.LastTime;
                 Log("경찰 버프 발동: 이속 증가 + 시야 해제. 이제 잡히면 즉시 탈락!");
             }
@@ -360,7 +366,8 @@ namespace Chase.Online
                 }
                 taken.Add(idx);
                 cop.StateValue.Value = (int)PState.Free;
-                cop.ServerTeleport(map.copSpawnPoints[idx] + Random.insideUnitSphere.With(y: 0) * 1.5f);
+                var jitter = Random.insideUnitCircle * 1.5f;
+                cop.ServerTeleport(map.copSpawnPoints[idx] + new Vector3(jitter.x, 0f, jitter.y));
             }
             Log("경찰 진입!");
         }
@@ -422,6 +429,12 @@ namespace Chase.Online
                     Capture(p, arrested);
                     break;
 
+                case InteractKind.Portal:
+                    if (p.State != PState.Free || index < 0 || index >= portals.Length) return;
+                    if (Flat(p.transform.position, portals[index].transform.position) > PortalRange + slack) return;
+                    if (portals[index].destination) p.ServerTeleport(portals[index].destination.ArrivalPoint);
+                    break;
+
                 case InteractKind.Exit:
                     if (!p.IsThief || p.State != PState.Free || Phase != OnlinePhase.LastTime) return;
                     if (index < 0 || index >= exitPositions.Count) return;
@@ -441,15 +454,15 @@ namespace Chase.Online
         public void ServerClub(OnlinePlayer p)
         {
             if (!IsPlaying || !p.IsThief || p.State != PState.Free || p.IsStunned || Now < p.ClubReadyAt.Value) return;
-            p.ClubReadyAt.Value = Now + clubCooldown;
-            p.ServerSwing(clubRange, 80f);
+            p.ClubReadyAt.Value = Now + batCooldownSec;
+            p.ServerSwing(batRange, 80f);
             bool hit = false;
             foreach (var cop in OnlinePlayer.All.Where(o => o.IsCop && o.State == PState.Free))
             {
                 Vector3 to = cop.transform.position - p.transform.position;
                 to.y = 0f;
-                if (to.magnitude > clubRange || Vector3.Angle(p.transform.forward, to) > 80f) continue;
-                cop.StunUntil.Value = Now + clubStun;
+                if (to.magnitude > batRange || Vector3.Angle(p.transform.forward, to) > 80f) continue;
+                cop.StunUntil.Value = Now + batStunDurationSec;
                 Log($"{p.DisplayName} → {cop.DisplayName} 몽둥이 명중! (기절)");
                 hit = true;
             }
@@ -497,30 +510,30 @@ namespace Chase.Online
             Log($"{cop.DisplayName} → {target.DisplayName} 체포! 감옥 이송 (게이지 -{lost})");
         }
 
-        // 곤봉: 맞을 때마다 일정 시간 느려지고(중첩 없음), batonStunStacks 번째에 기절한다.
+        // 곤봉: 맞을 때마다 일정 시간 느려지고(중첩 없음), batonStacksToStun 번째에 기절한다.
         // 기절 중인 도둑은 더 맞지 않는다.
         public void ServerBaton(OnlinePlayer cop)
         {
             if (!IsPlaying || !cop.IsCop || cop.State != PState.Free || cop.IsStunned || Now < cop.ClubReadyAt.Value) return;
-            cop.ClubReadyAt.Value = Now + batonCooldown;
+            cop.ClubReadyAt.Value = Now + batonAttackIntervalSec;
             cop.ServerSwing(batonRange, BatonHalfAngle);
 
             var target = NearestThief(cop, t => !t.IsStunned, batonRange, BatonHalfAngle);
             if (target == null) return;
 
             target.BatonStacks.Value++;
-            target.batonStacksExpireAt = Now + batonStackTime;
-            if (target.BatonStacks.Value >= batonStunStacks)
+            target.batonStacksExpireAt = Now + batonStackResetSec;
+            if (target.BatonStacks.Value >= batonStacksToStun)
             {
-                target.StunUntil.Value = Now + thiefStun;
+                target.StunUntil.Value = Now + batonStunDurationSec;
                 target.SlowUntil.Value = 0;
                 target.batonStacksExpireAt = target.StunUntil.Value;
-                Log($"{cop.DisplayName} → {target.DisplayName} 곤봉 {batonStunStacks}회 명중! (기절)");
+                Log($"{cop.DisplayName} → {target.DisplayName} 곤봉 {batonStacksToStun}회 명중! (기절)");
             }
             else
             {
-                target.SlowUntil.Value = Now + batonSlowDuration;
-                string text = $"{target.DisplayName} 곤봉 {target.BatonStacks.Value}/{batonStunStacks}대 (이속 감소)";
+                target.SlowUntil.Value = Now + batonSlowDurationSec;
+                string text = $"{target.DisplayName} 곤봉 {target.BatonStacks.Value}/{batonStacksToStun}대 (이속 감소)";
                 NotifyRpc(text, RpcTarget.Single(cop.OwnerClientId, RpcTargetUse.Temp));
                 NotifyRpc(text, RpcTarget.Single(target.OwnerClientId, RpcTargetUse.Temp));
             }
@@ -530,8 +543,7 @@ namespace Chase.Online
         {
             if (!IsPlaying || !p.IsThief || p.State != PState.Free || p.IsStunned || p.Drinks.Value <= 0) return;
             p.Drinks.Value--;
-            p.BuffUntil.Value = System.Math.Max(p.BuffUntil.Value, Now + drinkDuration);
-            p.DrinkUntil.Value = Now + drinkDuration;
+            p.DrinkUntil.Value = Now + energyDrinkDurationSec;
         }
 
         // 감옥 앞에서 E 를 누르고 있는 도둑이 있으면 게이지가 차고, 없으면 절반 속도로 줄어든다.
@@ -544,8 +556,8 @@ namespace Chase.Online
 
             float progress = RescueProgress.Value;
             if (jailed.Count == 0) progress = 0f;
-            else if (rescuer != null) progress += Time.deltaTime / rescueHoldTime;
-            else progress -= Time.deltaTime / rescueHoldTime * rescueDecayMultiplier;
+            else if (rescuer != null) progress += Time.deltaTime / rescueHoldDurationSec;
+            else progress -= Time.deltaTime / rescueHoldDurationSec * rescueDecayMultiplier;
             progress = Mathf.Clamp01(progress);
 
             if (progress >= 1f)
@@ -562,7 +574,7 @@ namespace Chase.Online
             if (jailer) jailer.HasCuffs.Value = true;
             t.jailedBy = ulong.MaxValue;
             t.StateValue.Value = (int)PState.Free;
-            t.BuffUntil.Value = System.Math.Max(t.BuffUntil.Value, Now + rescueBuff);
+            t.EscapeBuffUntil.Value = Now + jailEscapeBuffDurationSec;
             t.ServerTeleport(prison.ReleasePoint(0));
             Log($"{rescuer.DisplayName} → {t.DisplayName} 구출! (게이지 +{t.Money.Value})");
         }
@@ -571,7 +583,7 @@ namespace Chase.Online
         {
             t.StateValue.Value = (int)PState.Free;
             t.HideIndex.Value = -1;
-            t.HideReadyAt.Value = Now + hideCooldown;
+            t.HideReadyAt.Value = Now + hideCooldownSec;
         }
 
         void End(OnlinePhase result, string reason)
@@ -619,7 +631,6 @@ namespace Chase.Online
             }
         }
 
-
         void AddMessage(string text)
         {
             messages.Add((text, Time.time));
@@ -632,14 +643,14 @@ namespace Chase.Online
         public Interaction FindArrest(OnlinePlayer me)
         {
             if (!worldBuilt || !IsPlaying || !me.IsCop || me.State != PState.Free || me.IsStunned || !CanCapture(me)) return new Interaction();
-            var stunned = NearestThief(me, t => t.IsStunned, cuffRange, viewAngle * 0.5f);
+            var stunned = NearestThief(me, t => t.IsStunned, cuffRange, copViewAngleDeg * 0.5f);
             if (stunned == null) return new Interaction();
             return new Interaction
             {
                 kind = InteractKind.Arrest,
                 index = (int)stunned.OwnerClientId,
                 prompt = Phase == OnlinePhase.LastTime ? $"{stunned.DisplayName} 제압" : $"{stunned.DisplayName} 수갑 체포",
-                holdTime = cuffArrestTime,
+                holdTime = cuffArrestDurationSec,
             };
         }
 
@@ -662,6 +673,9 @@ namespace Chase.Online
                 bestDist = d;
                 best = new Interaction { kind = kind, index = index, prompt = prompt, holdTime = hold };
             }
+
+            for (int i = 0; i < portals.Length; i++)
+                if (portals[i].destination) Consider(InteractKind.Portal, i, portals[i].transform.position, PortalRange, portals[i].prompt, 0f);
 
             for (int i = 0; i < hideSpots.Length; i++)
             {
@@ -691,8 +705,7 @@ namespace Chase.Online
         public bool IsVisibleToLocal(OnlinePlayer target)
         {
             var me = OnlinePlayer.Local;
-            if (target.State == PState.Eliminated || target.State == PState.Escaped || target.State == PState.Waiting) return false;
-            if (target.State == PState.Hidden) return false;
+            if (target.State != PState.Free && target.State != PState.Jailed) return false;
             if (me == null || !IsPlaying) return true;
             if (me == target || me.Role == target.Role) return true;
             if (me.State == PState.Eliminated || me.State == PState.Escaped) return true;
@@ -703,7 +716,7 @@ namespace Chase.Online
             to.y = 0f;
             float d = to.magnitude;
             if (d <= nearRange) return true;
-            if (d > viewRange || Vector3.Angle(me.transform.forward, to) > viewAngle * 0.5f) return false;
+            if (d > viewRange || Vector3.Angle(me.transform.forward, to) > ViewAngleFor(me) * 0.5f) return false;
             Vector3 eye = me.transform.position + Vector3.up * 1.5f;
             if (Physics.Linecast(eye, target.transform.position + Vector3.up * 1.2f, out var hit, ~0, QueryTriggerInteraction.Ignore))
                 return hit.collider.GetComponentInParent<OnlinePlayer>() == target;
@@ -721,11 +734,5 @@ namespace Chase.Online
             b.y = 0f;
             return Vector3.Distance(a, b);
         }
-    }
-
-    static class VectorExtensions
-    {
-        public static Vector3 With(this Vector3 v, float? x = null, float? y = null, float? z = null) =>
-            new Vector3(x ?? v.x, y ?? v.y, z ?? v.z);
     }
 }

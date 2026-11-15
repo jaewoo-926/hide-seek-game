@@ -71,6 +71,7 @@ namespace Chase.Online
         {
             if (!me.IsCop || game.PingPosition == null || Time.time > game.PingUntil) return;
             var cam = Camera.main;
+            if (cam == null) return;
             Vector3 sp = cam.WorldToScreenPoint(game.PingPosition.Value + Vector3.up * 1.5f);
             if (sp.z < 0) return;
             // 오브젝트 위 말풍선 (이미지가 생기면 교체)
@@ -80,7 +81,6 @@ namespace Chase.Online
             Fill(bubble, new Color(1f, 0.88f, 0.4f, 0.95f));
             Fill(new Rect(sp.x - 6 * scale, bubble.yMax, 12 * scale, 10 * scale), new Color(1f, 0.88f, 0.4f, 0.95f));
             GUI.Label(bubble, "<color=#1A1A1A><b>!!</b></color>", center);
-
         }
 
         void DrawGauge(OnlineGame game, OnlinePlayer me)
@@ -92,14 +92,14 @@ namespace Chase.Online
             string text;
             if (game.Phase == OnlinePhase.LastTime)
             {
-                Fill(new Rect(rect.x, rect.y, rect.width * (game.LastTimeRemaining / game.lastTimeDuration), rect.height), LastTimeFill);
+                Fill(new Rect(rect.x, rect.y, rect.width * (game.LastTimeRemaining / game.lastTimeDurationSec), rect.height), LastTimeFill);
                 text = $"<b>라스트 타임!</b>  남은 시간 {Mathf.CeilToInt(game.LastTimeRemaining)}초";
             }
             else
             {
                 Fill(new Rect(rect.x, rect.y, rect.width * game.GaugeRatio, rect.height), GaugeFill);
-                int left = Mathf.CeilToInt(game.Phase == OnlinePhase.Countdown ? game.matchTimeLimit : game.MatchRemaining);
-                text = $"<b>도둑 팀 게이지</b>  {game.Gauge} / {game.targetMoney}    <color=#DDDDDD>남은 시간 {left / 60}:{left % 60:00}</color>";
+                int left = Mathf.CeilToInt(game.Phase == OnlinePhase.Countdown ? game.matchTimeLimitSec : game.MatchRemaining);
+                text = $"<b>도둑 팀 게이지</b>  {game.Gauge} / {game.gaugeMaxAmount}    <color=#DDDDDD>남은 시간 {left / 60}:{left % 60:00}</color>";
             }
             GUI.Label(rect, text, center);
 
@@ -160,7 +160,7 @@ namespace Chase.Online
                 else if (me.HideCooldown > 0f) sb.AppendLine($"<color=#BBBBBB>다시 숨기까지 {me.HideCooldown:0}초</color>");
                 if (me.IsStunned) sb.AppendLine($"<color=#FFE066>기절! {me.StunRemaining:0.0}초</color>");
                 else if (me.BatonStacks.Value > 0)
-                    sb.AppendLine($"<color=#FF6B6B>곤봉 {me.BatonStacks.Value}/{game.batonStunStacks}대" + (me.IsSlowed ? "  이속 감소" : "") + "</color>");
+                    sb.AppendLine($"<color=#FF6B6B>곤봉 {me.BatonStacks.Value}/{game.batonStacksToStun}대" + (me.IsSlowed ? "  이속 감소" : "") + "</color>");
             }
             else
             {
@@ -212,7 +212,6 @@ namespace Chase.Online
                         text = me.Focus.prompt;
                         ratio = me.HoldRatio;
                     }
-
                     else if (me.Focus.IsValid)
                     {
                         text = me.Focus.kind == InteractKind.Arrest
