@@ -212,6 +212,13 @@ namespace Chase.Online
                         text = me.Focus.prompt;
                         ratio = me.HoldRatio;
                     }
+                    else if (me.Focus.kind == InteractKind.Safe)
+                    {
+                        var user = game.SafeUser(me.Focus.index);
+                        text = user != null && user != me
+                            ? me.Focus.prompt
+                            : $"<b>[E]</b> 금고 열기 · <b>[R]</b> 작은 다이얼   <color=#BBBBBB>{me.Focus.prompt}</color>";
+                    }
                     else if (me.Focus.IsValid)
                     {
                         text = me.Focus.kind == InteractKind.Arrest

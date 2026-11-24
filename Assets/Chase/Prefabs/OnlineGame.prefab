@@ -96,18 +96,36 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Chase.Online.OnlineGame
   ShowTopMostFoldoutHeaderGroup: 1
-  gaugeMaxAmount: 1000
+  startCountdownSec: 5
+  matchTimeLimitSec: 600
+  gaugeMaxAmount: 13000
   thiefHeadStartSec: 30
   lastTimeDurationSec: 90
   safeCount: 12
   energyDrinkCount: 6
-  safeRespawnDelay: 45
+  safeDialSpeed: 30
+  safeFailLockSec: 1
+  safeDialSoundRange: 5
+  safeDialFullPrefab: {fileID: 3825935986175226619, guid: 3f1c3b49ea1c6674f9cb4661c3b038f8, type: 3}
+  safeDialCompactPrefab: {fileID: 8218741923768956110, guid: 413feea3569129b4cbd6882879ddf652, type: 3}
   hideMaxDurationSec: 20
+  hideCooldownSec: 10
   energyDrinkDurationSec: 8
+  rescueHoldDurationSec: 5
+  rescueDecayMultiplier: 0.5
   jailEscapeBuffDurationSec: 4
   batCooldownSec: 10
   batRange: 1.5
   batStunDurationSec: 1.5
+  batonRange: 1.5
+  batonAttackIntervalSec: 1
+  batonSlowDurationSec: 3
+  batonStackResetSec: 30
+  batonStacksToStun: 3
+  batonStunDurationSec: 4
+  cuffRange: 1.2
+  cuffArrestDurationSec: 1.5
   copViewAngleDeg: 90
+  thiefViewAngleDeg: 90
   viewRange: 14
   nearRange: 3.5

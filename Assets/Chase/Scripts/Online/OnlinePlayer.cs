@@ -57,6 +57,13 @@ namespace Chase.Online
         public readonly NetworkVariable<bool> Rescuing = new NetworkVariable<bool>(
             false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
 
+        // ---- 금고 다이얼 ----
+        // 서버가 쓰는 값: 지금 열고 있는 금고 번호 (-1 이면 없음). 이 값이 곧 "사용 중인 사람"이다.
+        public readonly NetworkVariable<int> DialSafe = new NetworkVariable<int>(-1);
+        // 소유자가 쓰는 값: 다이얼을 실제로 돌리는 중인지 (근처 경찰에게 소리)
+        public readonly NetworkVariable<bool> DialTurning = new NetworkVariable<bool>(
+            false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
+
         // ---- 서버 전용 ----
         [System.NonSerialized] public ulong jailedBy = ulong.MaxValue;
         [System.NonSerialized] public double hideEnteredAt;
@@ -111,6 +118,7 @@ namespace Chase.Online
         float holdTime;
         Interaction holdTarget;
         float verticalVelocity;
+        SafeDialController safeDial;
 
         void Awake()
         {
@@ -138,6 +146,8 @@ namespace Chase.Online
                 Local = this;
                 cam = FindAnyObjectByType<QuarterViewCamera>();
                 if (cam && !cam.GetComponent<VisionOverlay>()) cam.gameObject.AddComponent<VisionOverlay>();
+                safeDial = gameObject.AddComponent<SafeDialController>();
+                safeDial.Init(this);
             }
         }
 
@@ -207,6 +217,15 @@ namespace Chase.Online
             if (!game.IsPlaying)
             {
                 CancelHold();
+                return;
+            }
+
+            // 금고 다이얼 창이 열려 있으면 이동·방향·몽둥이·상호작용 대신 다이얼만 조작한다
+            if (safeDial && safeDial.IsOpen)
+            {
+                CancelHold();
+                Focus = default;
+                ApplyGravity();
                 return;
             }
 
@@ -291,6 +310,12 @@ namespace Chase.Online
             cc.Move((move * CurrentSpeed + Vector3.up * verticalVelocity) * Time.deltaTime);
         }
 
+        void ApplyGravity()
+        {
+            verticalVelocity = cc.isGrounded ? -1f : verticalVelocity - 20f * Time.deltaTime;
+            cc.Move(Vector3.up * verticalVelocity * Time.deltaTime);
+        }
+
         void FaceMouse(Mouse mouse)
         {
             if (cam == null || IsStunned) return;
@@ -330,6 +355,13 @@ namespace Chase.Online
             Focus = arrestable.IsValid ? arrestable : game.FindInteraction(this);
             // 구출은 서버가 게이지를 관리하므로 누르고 있는지만 알린다
             SetRescuing(Focus.kind == InteractKind.Prison && kb.eKey.isPressed);
+            // 금고: E = 전체 창, R = 작은 다이얼 (회의 비교용으로 둘 다)
+            if (Focus.kind == InteractKind.Safe && safeDial)
+            {
+                if (kb.eKey.wasPressedThisFrame) safeDial.Open(Focus.index, false);
+                else if (kb.rKey.wasPressedThisFrame) safeDial.Open(Focus.index, true);
+                return;
+            }
             if (!Focus.IsValid || Focus.kind == InteractKind.Arrest || Focus.kind == InteractKind.Prison || !kb.eKey.wasPressedThisFrame) return;
             if (Focus.holdTime <= 0f) InteractRpc((int)Focus.kind, Focus.index);
             else StartHold(Focus);
@@ -369,5 +401,24 @@ namespace Chase.Online
 
         [Rpc(SendTo.Server)]
         void DrinkRpc() => OnlineGame.I.ServerDrink(this);
+
+        // ---- 금고 다이얼 요청 (SafeDialController 가 부른다) ----
+        public void RequestOpenSafe(int safe) => OpenSafeRpc(safe);
+        public void RequestConfirmSafe(int safe, int step, int tick) => ConfirmSafeRpc(safe, step, tick);
+        public void RequestCloseSafe() => CloseSafeRpc();
+
+        public void SetDialTurning(bool value)
+        {
+            if (IsOwner && DialTurning.Value != value) DialTurning.Value = value;
+        }
+
+        [Rpc(SendTo.Server)]
+        void OpenSafeRpc(int safe) => OnlineGame.I.ServerOpenSafe(this, safe);
+
+        [Rpc(SendTo.Server)]
+        void ConfirmSafeRpc(int safe, int step, int tick) => OnlineGame.I.ServerConfirmSafe(this, safe, step, tick);
+
+        [Rpc(SendTo.Server)]
+        void CloseSafeRpc() => OnlineGame.I.ServerCloseSafe(this);
     }
 }

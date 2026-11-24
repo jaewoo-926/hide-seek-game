@@ -31,12 +31,18 @@ namespace Chase.Online
         [Header("규칙")]
         public float startCountdownSec = 5f;
         public float matchTimeLimitSec = 600f;   // 시작부터 라스트 타임 전까지. 못 채우면 경찰 승리
-        public int gaugeMaxAmount = 1000;
+        public int gaugeMaxAmount = 13000;
         public float thiefHeadStartSec = 30f;
         public float lastTimeDurationSec = 90f;
         public int safeCount = 12;
         public int energyDrinkCount = 6;
-        public float safeRespawnDelay = 45f;
+
+        [Header("금고 다이얼")]
+        public float safeDialSpeed = 30f;         // 키보드로 돌릴 때 칸/초
+        public float safeFailLockSec = 1f;        // 구간 밖에서 확정하면 이 시간 동안 못 돌림
+        public float safeDialSoundRange = 5f;     // 돌리는 소리가 경찰에게 들리는 거리
+        public GameObject safeDialFullPrefab;     // E: 전체 창 (회의 후 하나만 남김)
+        public GameObject safeDialCompactPrefab;  // R: 작은 다이얼
         public float hideMaxDurationSec = 20f;
         public float hideCooldownSec = 10f;      // 은신처에서 나온 뒤 다시 숨기까지
         public float energyDrinkDurationSec = 8f;
@@ -75,6 +81,7 @@ namespace Chase.Online
         public readonly NetworkVariable<double> LastTimeEndsAt = new NetworkVariable<double>();
         public readonly NetworkVariable<bool> CopsDeployed = new NetworkVariable<bool>();
         public readonly NetworkVariable<int> RobbedMask = new NetworkVariable<int>();
+        public readonly NetworkVariable<int> SafeProgressBits = new NetworkVariable<int>(); // 금고마다 2비트: 맞춘 단계 0~3
         public readonly NetworkVariable<int> PickedMask = new NetworkVariable<int>();   // 0~3 단서, 4~ 드링크
         public readonly NetworkVariable<int> KnownDigits = new NetworkVariable<int>();
         public readonly NetworkVariable<bool> PrisonKnown = new NetworkVariable<bool>();
@@ -109,7 +116,8 @@ namespace Chase.Online
         WorldSpawner spawner;
         bool worldBuilt;
         readonly List<Vector3> safePositions = new List<Vector3>();
-        readonly List<int> safeMoney = new List<int>();
+        readonly List<SafeGrade> safeGrades = new List<SafeGrade>();
+        readonly List<int[]> safeTargets = new List<int[]>();
         readonly List<Renderer> safeDoors = new List<Renderer>();
         readonly List<GameObject> pickupObjects = new List<GameObject>();
         readonly List<Vector3> pickupPositions = new List<Vector3>();
@@ -118,7 +126,6 @@ namespace Chase.Online
         HideSpot[] hideSpots = new HideSpot[0];
         FloorPortal[] portals = new FloorPortal[0];
         Prison prison;
-        readonly double[] safeRobbedAt = new double[32];
         Color baseAmbient;
 
         void Awake()
@@ -201,14 +208,20 @@ namespace Chase.Online
             exitPositions.Add(e1);
             exitPositions.Add(e2);
 
+            // 금고 등급: 소액 6 · 중간 4 · 고액 2 를 섞어서 배정 (겉모습으로는 구분 안 됨)
+            var grades = new List<SafeGrade>();
+            for (int i = 0; i < safeCount; i++)
+                grades.Add(i < 6 ? SafeGrade.Small : i < 10 ? SafeGrade.Medium : i < 12 ? SafeGrade.Large : SafeGrade.Small);
+            grades = grades.OrderBy(_ => rng.Next()).ToList();
+
             for (int i = 0; i < safeCount; i++)
             {
                 Vector3 p = Take(7f, s => Flat(s, map.thiefSpawn) > 6f);
-                int money = rng.Next(10, 19) * 10;
-                var safe = spawner.SpawnSafe(p, money);
+                var safe = spawner.SpawnSafe(p, MoneyOf(grades[i]));
                 safe.enabled = false; // 싱글플레이 로직은 끄고 표시용으로만 사용
                 safePositions.Add(p);
-                safeMoney.Add(money);
+                safeGrades.Add(grades[i]);
+                safeTargets.Add(MakeTargets(rng));
                 safeDoors.Add(safe.transform.GetChild(1).GetComponent<Renderer>());
             }
             for (int i = 0; i < 4; i++)
@@ -267,6 +280,105 @@ namespace Chase.Online
 
         bool IsRobbed(int i) => (RobbedMask.Value & (1 << i)) != 0;
 
+        // ================= 금고 다이얼 =================
+
+        public enum SafeGrade { Small, Medium, Large }
+
+        public const float SafeRange = 2.1f;
+        const int MinTargetGap = 15; // 직전 목표(1단계는 시작 눈금 0)와 너무 가깝지 않게
+
+        static int MoneyOf(SafeGrade g) => g == SafeGrade.Large ? 4000 : g == SafeGrade.Medium ? 2000 : 1000;
+        static int ZoneOf(SafeGrade g) => g == SafeGrade.Large ? 2 : g == SafeGrade.Medium ? 3 : 4;
+
+        static int[] MakeTargets(System.Random rng)
+        {
+            var t = new int[SafeDial.Steps];
+            int prev = 0;
+            for (int s = 0; s < t.Length; s++)
+            {
+                int v;
+                do v = rng.Next(SafeDial.Ticks); while (SafeDial.Distance(v, prev) < MinTargetGap);
+                t[s] = prev = v;
+            }
+            return t;
+        }
+
+        public int SafeTotal => safePositions.Count;
+        public Vector3 SafePosition(int i) => safePositions[i];
+        public SafeGrade SafeGradeOf(int i) => safeGrades[i];
+        public int SafeMoney(int i) => MoneyOf(safeGrades[i]);
+        public int SafeZone(int i) => ZoneOf(safeGrades[i]);
+        public int[] SafeTargets(int i) => safeTargets[i];
+        public bool IsSafeRobbed(int i) => IsRobbed(i);
+        public int SafeProgress(int i) => (SafeProgressBits.Value >> (2 * i)) & 3;
+        public OnlinePlayer SafeUser(int i) => OnlinePlayer.All.FirstOrDefault(p => p.DialSafe.Value == i);
+
+        // 내 플레이어가 금고를 연 순간 (금고, 금액). 성공 연출용
+        public event System.Action<int, int> SafeOpenedLocal;
+
+        void SetSafeProgress(int i, int step)
+        {
+            int bits = SafeProgressBits.Value & ~(3 << (2 * i));
+            SafeProgressBits.Value = bits | ((step & 3) << (2 * i));
+        }
+
+        bool ValidSafe(int i) => i >= 0 && i < safePositions.Count;
+
+        public void ServerOpenSafe(OnlinePlayer p, int i)
+        {
+            if (Phase != OnlinePhase.Heist || !p.IsThief || p.State != PState.Free || p.IsStunned) return;
+            if (!ValidSafe(i) || IsRobbed(i) || p.DialSafe.Value >= 0) return;
+            if (Flat(p.transform.position, safePositions[i]) > SafeRange + 1.5f) return;
+            var user = SafeUser(i);
+            if (user != null && user != p)
+            {
+                NotifyRpc("다른 도둑이 열고 있다", RpcTarget.Single(p.OwnerClientId, RpcTargetUse.Temp));
+                return;
+            }
+            p.DialSafe.Value = i;
+        }
+
+        // 확정 요청: 내 화면이 구간 안이라고 판단한 눈금을 서버가 같은 목표로 다시 검사한다
+        public void ServerConfirmSafe(OnlinePlayer p, int i, int step, int tick)
+        {
+            if (!ValidSafe(i) || p.DialSafe.Value != i || IsRobbed(i)) return;
+            int progress = SafeProgress(i);
+            if (step != progress || progress >= SafeDial.Steps) return;  // 같은 단계 중복 요청은 무시
+            if (!SafeDial.IsHit(tick, safeTargets[i][progress], SafeZone(i))) return;
+
+            progress++;
+            SetSafeProgress(i, progress);
+            if (progress < SafeDial.Steps) return;
+
+            int money = SafeMoney(i);
+            RobbedMask.Value |= 1 << i;
+            p.Money.Value += money;
+            p.DialSafe.Value = -1;
+            Log($"{p.DisplayName}: 금고 열림 +${money:N0}");
+            SafeOpenedRpc(i, money, RpcTarget.Single(p.OwnerClientId, RpcTargetUse.Temp));
+        }
+
+        public void ServerCloseSafe(OnlinePlayer p)
+        {
+            if (p.DialSafe.Value >= 0) p.DialSafe.Value = -1;
+        }
+
+        [Rpc(SendTo.SpecifiedInParams)]
+        void SafeOpenedRpc(int safe, int money, RpcParams rpcParams) => SafeOpenedLocal?.Invoke(safe, money);
+
+        // 곤봉·기절·체포·감옥·라스트 타임·금고에서 멀어짐이면 창을 강제로 닫는다 (진행 단계는 남는다)
+        void UpdateSafeUsers()
+        {
+            foreach (var p in OnlinePlayer.All)
+            {
+                int i = p.DialSafe.Value;
+                if (i < 0) continue;
+                bool keep = ValidSafe(i) && !IsRobbed(i) && Phase == OnlinePhase.Heist && p.State == PState.Free && !p.IsStunned
+                    && Flat(p.transform.position, safePositions[i]) <= SafeRange + 2.5f;
+                if (!keep) p.DialSafe.Value = -1;
+            }
+        }
+
         // ================= 서버 루프 =================
 
         void Update()
@@ -278,6 +390,7 @@ namespace Chase.Online
             if (!IsSpawned || !IsServer || !worldBuilt) return;
             double now = Now;
             if (Phase == OnlinePhase.Countdown && now >= StartsAt.Value) PhaseValue.Value = (int)OnlinePhase.Heist;
+            UpdateSafeUsers();
             if (!IsPlaying) return;
 
             if (!CopsDeployed.Value && now >= CopEntryAt.Value) DeployCops();
@@ -288,10 +401,6 @@ namespace Chase.Online
             foreach (var t in thieves)
                 if (t.BatonStacks.Value > 0 && now >= t.batonStacksExpireAt) t.BatonStacks.Value = 0;
 
-            // 금고 재충전
-            for (int i = 0; i < safeCount; i++)
-                if (IsRobbed(i) && now - safeRobbedAt[i] >= safeRespawnDelay)
-                    RobbedMask.Value &= ~(1 << i);
 
             // 아이템 줍기
             foreach (var t in thieves)
@@ -382,13 +491,7 @@ namespace Chase.Online
             switch (kind)
             {
                 case InteractKind.Safe:
-                    if (!p.IsThief || p.State != PState.Free || Phase != OnlinePhase.Heist) return;
-                    if (index < 0 || index >= safeCount || IsRobbed(index)) return;
-                    if (Flat(p.transform.position, safePositions[index]) > 2.1f + slack) return;
-                    p.Money.Value += safeMoney[index];
-                    RobbedMask.Value |= 1 << index;
-                    safeRobbedAt[index] = Now;
-                    Log($"{p.DisplayName}: 금고에서 {safeMoney[index]}원 획득!");
+                    ServerOpenSafe(p, index);
                     break;
 
                 case InteractKind.Hide:
@@ -523,6 +626,7 @@ namespace Chase.Online
 
             target.BatonStacks.Value++;
             target.batonStacksExpireAt = Now + batonStackResetSec;
+            ServerCloseSafe(target); // 맞으면 금고 창이 닫힌다 (진행 단계는 유지)
             if (target.BatonStacks.Value >= batonStacksToStun)
             {
                 target.StunUntil.Value = Now + batonStunDurationSec;
@@ -688,7 +792,12 @@ namespace Chase.Online
             {
                 if (Phase == OnlinePhase.Heist)
                     for (int i = 0; i < safePositions.Count; i++)
-                        if (!IsRobbed(i)) Consider(InteractKind.Safe, i, safePositions[i], 2.1f, $"금고 털기 (+{safeMoney[i]})", 2.5f);
+                    {
+                        if (IsRobbed(i)) continue;
+                        var user = SafeUser(i);
+                        string prompt = user != null && user != me ? "다른 도둑이 열고 있다" : $"금고 (진행 {SafeProgress(i)}/{SafeDial.Steps})";
+                        Consider(InteractKind.Safe, i, safePositions[i], SafeRange, prompt, 0f);
+                    }
 
                 if (OnlinePlayer.All.Any(o => o.State == PState.Jailed))
                     Consider(InteractKind.Prison, 0, prison.transform.position, prison.range, "동료 구출", 0f);
@@ -726,6 +835,31 @@ namespace Chase.Online
         void LateUpdate()
         {
             foreach (var p in OnlinePlayer.All) p.SetRendered(IsVisibleToLocal(p));
+            PlayNearbyDialSounds();
+        }
+
+        // 경찰: 5m 안에서 다이얼을 돌리는 도둑이 있으면 딸깍 소리 (시야와 무관, 가까울수록 크게)
+        AudioSource dialAudio;
+        float nextDialClick;
+
+        void PlayNearbyDialSounds()
+        {
+            var me = OnlinePlayer.Local;
+            if (me == null || !me.IsCop || !IsPlaying || Time.time < nextDialClick) return;
+            float nearest = float.MaxValue;
+            foreach (var t in OnlinePlayer.All)
+                if (t.IsThief && t.DialTurning.Value)
+                    nearest = Mathf.Min(nearest, Flat(t.transform.position, me.transform.position));
+            if (nearest > safeDialSoundRange) return;
+
+            if (!dialAudio)
+            {
+                dialAudio = gameObject.AddComponent<AudioSource>();
+                dialAudio.playOnAwake = false;
+                dialAudio.spatialBlend = 0f;
+            }
+            dialAudio.PlayOneShot(SafeDialController.ClickClip, Mathf.Lerp(0.9f, 0.3f, nearest / safeDialSoundRange));
+            nextDialClick = Time.time + 0.12f;
         }
 
         public static float Flat(Vector3 a, Vector3 b)
